@@ -8,17 +8,19 @@ in_channels: 1
 num_classes: 1
 use_pretrained_weights: true
 
-test_model: true
-checkpoint_path: ./checkpoints/ASOCA/UNet_final/best_model.ckpt #used for when test model = true
+test_model: false
+checkpoint_path: #./checkpoints/ASOCA/UNet_final/best_model.ckpt #used for when test model = true
 early_stopping_patience: 10
 num_workers: 0
 check_val_every_n_epoch: 3
 devices: auto
 enable_progress_bar: True
+device: "cuda"
 
-wandb_project: ASOCA
-wandb_experiment_name: UNet_final
+wandb_project: tdt17
+wandb_experiment_name: unet_test
 
 train_split_ratio: 0.7
+val_split_ratio: 0.15
 data_root: ./data
 checkpoint_folder: ./checkpoints/

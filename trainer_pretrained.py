@@ -1,7 +1,7 @@
 import time
 
 from matplotlib import pyplot as plt
-from datamodule import ASOCADataModule
+from datamodule_asoca import ASOCADataModule
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger

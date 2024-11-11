@@ -1,24 +1,30 @@
-from datamodule import DataModule
+from datamodule_asoca import ASOCADataModule
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 import torch
 from torch import nn
+from torchvision.models import resnet50, ResNet50_Weights
+import torchvision.transforms.functional as TF
+from torchmetrics import Accuracy
 import munch
 import yaml
 from pathlib import Path
 import os
-import monai.networks
+import monai
 from monai.losses import DiceFocalLoss
 from monai.metrics import DiceMetric, HausdorffDistanceMetric
+from monai.auto3dseg import LabelStats
+from monai.inferers import SliceInferer, SlidingWindowInferer
+from torchvision.models.resnet import resnet50
 import torch.nn.functional as F
-import torchio as tio
 
 
 torch.set_float32_matmul_precision('medium')
 here = os.path.dirname(os.path.abspath(__file__))
 config_file = os.path.join(here, 'config.yaml')
 config = munch.munchify(yaml.load(open(config_file), Loader=yaml.FullLoader))
+
 
 # Baseline model
 # Based on code from Aladdin Persson and the Pytorch Lightning tutorial posted in BB
@@ -89,6 +95,9 @@ class U_Net(pl.LightningModule):
 
         x = self.bottleneck(x)
         skip_connections = skip_connections[::-1] # Reverse the list
+        print("Skip connections:", len(skip_connections))
+        print("Ups:", len(self.ups))
+
 
         for idx in range(0, len(self.ups), 2):
             x = self.ups[idx](x)
@@ -156,52 +165,36 @@ class U_Net(pl.LightningModule):
             "test/acc": acc.mean(),
         },on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
 
+
 if __name__ == "__main__":
     
     pl.seed_everything(42)
 
-    #dm = ASOCADataModule(
-    dm = DataModule(
+    dm = ASOCADataModule(
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         train_split_ratio=config.train_split_ratio,
-        val_split_ratio=config.val_split_ratio,
         data_root=config.data_root)
-    
-    #unet = monai.networks.nets.UNet(
-            #in_channels=config.in_channels,
-            #out_channels=config.num_classes,
-            #channels=(16, 32, 64, 128, 256),
-            #strides=(2, 2, 2, 2),
-            #spatial_dims=3
-        #)
     
     print(dm)
 
     if config.checkpoint_path:
-        ##model = U_Net.load_from_checkpoint(checkpoint_path=config.checkpoint_path, config=config)
-        #model = Model(unet.load_from_checkpoint(checkpoint_path=config.checkpoint_path, in_channels=config.in_channels, out_channels=config.num_classes, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), spatial_dims=3))
+        model = U_Net.load_from_checkpoint(checkpoint_path=config.checkpoint_path, config=config)
         print("Loading weights from checkpoint...")
     else:
         model = U_Net(config)
-        #model = Model(
-            #net=unet,
-            #criterion=monai.losses.DiceCELoss(softmax=True),
-            #learning_rate=1e-2,
-            #optimizer_class=torch.optim.AdamW,
-        #)
 
     trainer = pl.Trainer(
         devices=config.devices, 
         max_epochs=config.max_epochs, 
-        #check_val_every_n_epoch=config.check_val_every_n_epoch,
+        check_val_every_n_epoch=config.check_val_every_n_epoch,
         enable_progress_bar=config.enable_progress_bar,
         precision="bf16-mixed",
         #log_every_n_steps=5,
         # deterministic=True,
         logger=WandbLogger(project=config.wandb_project, name=config.wandb_experiment_name, config=config),
         callbacks=[
-            #EarlyStopping(monitor="val/acc", patience=config.early_stopping_patience, mode="max", verbose=True),
+            EarlyStopping(monitor="val/acc", patience=config.early_stopping_patience, mode="max", verbose=True),
             LearningRateMonitor(logging_interval="step"),
             ModelCheckpoint(dirpath=Path(config.checkpoint_folder, config.wandb_project, config.wandb_experiment_name), 
                             filename='best_model:epoch={epoch:02d}-val_acc={val/acc:.4f}',
