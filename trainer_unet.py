@@ -96,6 +96,26 @@ def validate_one_epoch(epoch, model, dataloader, criterion):
     print(f"Epoch {epoch} - Validation Loss: {epoch_loss:.4f}, Dice Score: {dice_score:.4f}")
     return epoch_loss, dice_score
 
+def test_model(model, dataloader, criterion):
+    model.eval()
+    running_loss = 0.0
+    dice_metric.reset()
+    with torch.no_grad():
+        for batch in dataloader:
+            inputs, labels = batch["image"].to(config.device), batch["label"].to(config.device)
+            outputs = sliding_window_inference(inputs, roi_size=(128, 128, 128), sw_batch_size=4, predictor=model)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item()
+            
+            outputs = torch.softmax(outputs, 1)
+            dice_metric(y_pred=outputs, y=labels)
+    
+    test_loss = running_loss / len(dataloader)
+    dice_score = dice_metric.aggregate().item()
+    dice_metric.reset()
+    print(f"Test Loss: {test_loss:.4f}, Test Dice Score: {dice_score:.4f}")
+    return test_loss, dice_score
+
 def save_checkpoint(model, optimizer, epoch, val_loss):
     checkpoint_path = checkpoint_dir / f"model_epoch_{epoch:02d}_val_loss_{val_loss:.4f}.pth"
     torch.save({
@@ -108,26 +128,30 @@ def save_checkpoint(model, optimizer, epoch, val_loss):
 
 def main():
     train_loader = dm.train_dataloader()
-    val_loader = dm.train_dataloader()
+    val_loader = dm.val_dataloader()
+    test_loader = dm.test_dataloader()
 
     best_val_loss = float("inf")
 
+    # Training and validation loop
     for epoch in range(1, config.max_epochs + 1):
         train_loss = train_one_epoch(epoch, model, train_loader, optimizer, criterion)
         val_loss, dice_score = validate_one_epoch(epoch, model, val_loader, criterion)
 
-        # Log metrics to WandB
         wandb.log({"train_loss": train_loss, "val_loss": val_loss, "dice_score": dice_score, "epoch": epoch})
 
-        # Learning rate scheduler step
         scheduler.step(val_loss)
 
-        # Save model if validation loss improves
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             save_checkpoint(model, optimizer, epoch, val_loss)
 
-    print("Training Complete!")
+    # Testing phase
+    print("\nEvaluating on Test Set...")
+    test_loss, test_dice_score = test_model(model, test_loader, criterion)
+    wandb.log({"test_loss": test_loss, "test_dice_score": test_dice_score})
+
+    print("Training and Testing Complete!")
 
 if __name__ == "__main__":
     main()
