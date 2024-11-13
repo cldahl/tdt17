@@ -1,6 +1,7 @@
 import time
 
 from matplotlib import pyplot as plt
+from datamodule import DataModule
 from datamodule_asoca import ASOCADataModule
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
@@ -241,11 +242,19 @@ if __name__ == "__main__":
     
     pl.seed_everything(42)
 
-    dm = ASOCADataModule(
+    #dm = ASOCADataModule(
+        #batch_size=config.batch_size,
+        #num_workers=config.num_workers,
+        #train_split_ratio=config.train_split_ratio,
+        #data_root=config.data_root)
+    
+    dm = DataModule(
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         train_split_ratio=config.train_split_ratio,
-        data_root=config.data_root)
+        val_split_ratio=config.val_split_ratio,
+        data_root=config.data_root
+    )
     
     print(dm)
 

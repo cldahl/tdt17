@@ -48,10 +48,11 @@ model = UNet(
     strides=(2, 2, 2, 2)
 ).to(config.device)
 
+
 # Loss function and optimizer
 criterion = DiceCELoss(softmax=True)
 optimizer = optim.AdamW(model.parameters(), lr=config.max_lr)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.max_epochs)
 
 # Metrics
 dice_metric = DiceMetric(include_background=False, reduction="mean")

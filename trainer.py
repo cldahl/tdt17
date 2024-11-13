@@ -179,7 +179,7 @@ if __name__ == "__main__":
     print(dm)
 
     if config.checkpoint_path:
-        ##model = U_Net.load_from_checkpoint(checkpoint_path=config.checkpoint_path, config=config)
+        model = U_Net.load_from_checkpoint(checkpoint_path=config.checkpoint_path, config=config)
         #model = Model(unet.load_from_checkpoint(checkpoint_path=config.checkpoint_path, in_channels=config.in_channels, out_channels=config.num_classes, channels=(16, 32, 64, 128, 256), strides=(2, 2, 2, 2), spatial_dims=3))
         print("Loading weights from checkpoint...")
     else:
@@ -194,14 +194,14 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         devices=config.devices, 
         max_epochs=config.max_epochs, 
-        #check_val_every_n_epoch=config.check_val_every_n_epoch,
+        check_val_every_n_epoch=config.check_val_every_n_epoch,
         enable_progress_bar=config.enable_progress_bar,
         precision="bf16-mixed",
-        #log_every_n_steps=5,
+        log_every_n_steps=5,
         # deterministic=True,
         logger=WandbLogger(project=config.wandb_project, name=config.wandb_experiment_name, config=config),
         callbacks=[
-            #EarlyStopping(monitor="val/acc", patience=config.early_stopping_patience, mode="max", verbose=True),
+            EarlyStopping(monitor="val/acc", patience=config.early_stopping_patience, mode="max", verbose=True),
             LearningRateMonitor(logging_interval="step"),
             ModelCheckpoint(dirpath=Path(config.checkpoint_folder, config.wandb_project, config.wandb_experiment_name), 
                             filename='best_model:epoch={epoch:02d}-val_acc={val/acc:.4f}',
