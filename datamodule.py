@@ -1,6 +1,7 @@
 from glob import glob
 import os
 import lightning.pytorch as pl
+from matplotlib import pyplot as plt
 import torch
 import monai
 from torch.utils.data import DataLoader
@@ -71,61 +72,70 @@ class DataModule(pl.LightningDataModule):
     #def diseased_test_dataloader(self):
         return DataLoader(self.diseased_test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, pin_memory=True, shuffle=False)
     
+    def inspect_labels(data):
+        # Print unique values of the label
+        print("Unique values in the label:", torch.unique(data["label"]))
+        return data
     
-    def get_transforms(self,split):    
+    def get_transforms(self, split):
         shared_transforms = [
             transforms.Compose([
                 # Preprocessing
                 transforms.LoadImaged(keys=["image", "label"]),
                 transforms.EnsureChannelFirstd(keys=["image", "label"]),
-                transforms.Resized(keys=["image", "label"], spatial_size=(512, 512, 75)),# 512, 512, 168 for asoca
+                transforms.Resized(keys=["image", "label"], spatial_size=(512, 512, 75)),
                 transforms.ScaleIntensityRangePercentilesd(keys=["image"], lower=5.0, upper=95.0, b_min=0.0, b_max=1.0, clip=True),
                 transforms.EnsureTyped(keys=["image", "label"], track_meta=False),
             ])
         ]
-        
+
         if split == "train":
             return transforms.Compose([
                 *shared_transforms,
                 # Data augmentation
-                #transforms.RandFlipd(keys=["image", "label"], prob=0.1, spatial_axis=[0, 2]), # Performs it on all 3 axes
-                #transforms.RandZoomd(keys=["image", "label"], prob=0.1, min_zoom=0.9, max_zoom=1.1, keep_size=True),
-                #transforms.Rand3DElasticd(keys = ["image", "label"], prob = 0.1, magnitude_range =(50, 50), sigma_range =(5, 5)), # Train is applied before patch, so it is 3D
-                #transforms.RandRotate90d(keys = ["image", "label"], prob = 0.1, max_k = 3),
-            ])
-            
-        elif split == "val":
-            return transforms.Compose([
-                *shared_transforms,
-            ])
-        elif split == "test":
-            return transforms.Compose([
-                *shared_transforms,
+                transforms.RandFlipd(keys=["image", "label"], prob=0.1, spatial_axis=[0, 2]),
+                transforms.RandZoomd(keys=["image", "label"], prob=0.2, min_zoom=0.9, max_zoom=1.1, keep_size=True),
+                transforms.Rand3DElasticd(keys=["image", "label"], prob=0.1, magnitude_range=(50, 50), sigma_range=(5, 5)),
+                #transforms.RandRotated(keys=["image", "label"], range_x=0.1, prob=0.1),
+                transforms.RandGaussianNoised(keys=["image"], prob=0.1, mean=0.0, std=0.1),
+                transforms.RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.2),
+                transforms.RandGaussianSmoothd(keys=["image"], prob=0.1, sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5), sigma_z=(0.5, 1.5)),
+                # Convert label to one-hot encoding with 3 classes
+                transforms.ToTensord(keys=["image", "label"]),
 
             ])
+        elif split in ["val", "test"]:
+            return transforms.Compose([
+                *shared_transforms,
+                transforms.ToTensord(keys=["image", "label"]),
+            ])
         elif split == "patch":
-            # Splits the 3D image into 2D patches
             return transforms.Compose([
                 transforms.SqueezeDimd(keys=["image", "label"], dim=-1),
                 transforms.Resized(keys=["image", "label"], spatial_size=(512, 512)),
             ])
+
 
 def get_file_pairs(root_dir, phase='train'):
     image_paths = []
     label_paths = []
     # Traverse through the numbered folders
     for folder in sorted(os.listdir(os.path.join(root_dir, phase))):
-        preRT_dir = os.path.join(root_dir, phase, folder, 'preRT')
+        preRT_dir = os.path.join(root_dir, phase, folder, 'midRT')
         if os.path.exists(preRT_dir):
             folder_number = folder.zfill(1)  # Ensure the folder number is correctly matched
 
             # Construct the expected filenames
-            image_pattern = os.path.join(preRT_dir, f"{folder_number}_preRT_T2.nii.gz")
-            label_pattern = os.path.join(preRT_dir, f"{folder_number}_preRT_mask.nii.gz")
+            image_pattern = os.path.join(preRT_dir, f"{folder_number}_preRT_T2_registered.nii.gz")
+            label_pattern = os.path.join(preRT_dir, f"{folder_number}_preRT_mask_registered.nii.gz")
+            image_pattern_2 = os.path.join(preRT_dir, f"{folder_number}_midRT_T2.nii.gz")
+            label_pattern_2 = os.path.join(preRT_dir, f"{folder_number}_midRT_mask.nii.gz")
 
             # Check if both image and label files exist
-            if os.path.exists(image_pattern) and os.path.exists(label_pattern):
+            if os.path.exists(image_pattern) and os.path.exists(label_pattern) and os.path.exists(image_pattern_2) and os.path.exists(label_pattern_2):
                 image_paths.append(image_pattern)
                 label_paths.append(label_pattern)
+                image_paths.append(image_pattern_2)
+                label_paths.append(label_pattern_2)
     
     return [{'image': img, 'label': lbl} for img, lbl in zip(image_paths, label_paths)]

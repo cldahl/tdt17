@@ -2,27 +2,19 @@ import time
 
 from matplotlib import pyplot as plt
 from datamodule import DataModule
-from datamodule_asoca import ASOCADataModule
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 import torch
 from torch import nn
 import torchvision.models as models
-import torchvision.transforms.functional as TF
-from torchmetrics import Accuracy
 import munch
 import yaml
 from pathlib import Path
 import os
-import monai
-from monai.losses import DiceFocalLoss
-from monai.metrics import DiceMetric, HausdorffDistanceMetric
-from monai.auto3dseg import LabelStats
-from monai.inferers import SliceInferer, SlidingWindowInferer
-from torchvision.models.resnet import resnet50
-import torch.nn.functional as F
-
+from monai.losses import DiceCELoss
+from monai.metrics import DiceMetric
+from torch.optim import AdamW
 
 torch.set_float32_matmul_precision('medium')
 here = os.path.dirname(os.path.abspath(__file__))
@@ -67,8 +59,10 @@ class VGGUnet(pl.LightningModule):
         self.config = config
         self.out_channels = config.num_classes
 
-        self.loss_fn = DiceFocalLoss(sigmoid=True)
-        self.acc_fn = DiceMetric(include_background=True, reduction="mean", num_classes=self.out_channels, get_not_nans=False) # HD95 is an alternative
+        #self.loss_fn = DiceFocalLoss(sigmoid=True)
+        #self.loss_fn = DiceCELoss(sigmoid=True, include_background=False)
+        self.loss_fn = DiceCELoss(softmax=True, include_background=False, to_onehot_y=True)
+        self.acc_fn = DiceMetric(include_background=False, reduction="mean", num_classes=self.out_channels, get_not_nans=False) # HD95 is an alternative
 
         self.pool = nn.MaxPool2d(2, 2)
 
@@ -163,7 +157,8 @@ class VGGUnet(pl.LightningModule):
     
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.config.max_lr) # For L2: weight_decay=self.config.weight_decay
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.max_epochs)
+        #optimizer = AdamW(self.parameters(), lr=config.max_lr, weight_decay=config.weight_decay)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.max_epochs)
         return [optimizer], [{"scheduler": lr_scheduler, "interval": "epoch"} ]
 
     def training_step(self, batch, batch_idx):
@@ -171,16 +166,16 @@ class VGGUnet(pl.LightningModule):
         y = batch["label"]
 
         y_hat = self.forward(x)
-        acc = self.acc_fn(y_hat > 0.5, y)
-        loss = self.loss_fn(y_hat, y)
+        dice = self.acc_fn(y_hat > 0.5, y.long())
+        loss = self.loss_fn(y_hat, y.long())
 
-        if torch.isnan(acc).any() or torch.isnan(loss).any():
+        if torch.isnan(dice).any() or torch.isnan(loss).any():
             return None
 
         self.log_dict({
             "train/loss": loss,
-            "train/acc": acc.mean()
-        },on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
+            "train/dice": dice.mean()
+        },on_epoch=True, on_step=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -188,15 +183,15 @@ class VGGUnet(pl.LightningModule):
         y = batch["label"]
 
         y_hat = self.forward(x)
-        acc = self.acc_fn(y_hat > 0.5, y)
-        loss = self.loss_fn(y_hat, y)
+        dice = self.acc_fn(y_hat > 0.5, y.long())
+        loss = self.loss_fn(y_hat, y.long())
 
-        if torch.isnan(acc).any() or torch.isnan(loss).any():
+        if torch.isnan(dice).any() or torch.isnan(loss).any():
             return None
             
         self.log_dict({
             "val/loss":loss,
-            "val/acc": acc.mean()
+            "val/dice": dice.mean()
         },on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
 
     
@@ -208,45 +203,43 @@ class VGGUnet(pl.LightningModule):
         y_hat = self.forward(x)
         end_time = time.time()  # Record end time
         inference_time = end_time - start_time  # Calculate inference time
-        acc = self.acc_fn(y_hat > 0.5, y)
+        dice = self.acc_fn(y_hat > 0.5, y.long())
 
-        if torch.isnan(acc).any():
+        if torch.isnan(dice).any():
             return None
 
         self.log_dict({
-            "test/acc": acc.mean(),
+            "test/dice": dice.mean(),
             "test/inference_time": inference_time  # Log inference time
         },on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
 
+def visualize_segmentation(image, true_label, predicted_label, acc, title):
+    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(title, fontsize=16)
+    
+    # Original image (denormalized for visualization, if needed)
+    img = image.permute(1, 2, 0).cpu().numpy()  # Convert to HWC for imshow
+    axs[0].imshow(img, cmap='gray' if img.shape[-1] == 1 else None)
+    axs[0].set_title("Original Image")
+    axs[0].axis("off")
 
-# Visualizes the segmentation of an image
-def visualize_segmentation(image, true_label, predicted_label, acc, type):
-    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-    fig.suptitle(type)  # Set overall title
+    # True label
+    axs[1].imshow(true_label.squeeze().cpu().numpy(), cmap='viridis', interpolation='none')
+    axs[1].set_title("True Label")
+    axs[1].axis("off")
 
-    axs[0].imshow(image.permute(1, 2, 0))  # Original image
-    axs[0].set_title('Original Image')
+    # Predicted label
+    pred = torch.argmax(predicted_label, dim=0).squeeze().cpu().numpy()  # Multi-class prediction
+    axs[2].imshow(pred, cmap='viridis', interpolation='none')
+    axs[2].set_title(f"Predicted Label (Acc: {acc.mean():.4f})")
+    axs[2].axis("off")
 
-    axs[1].imshow(true_label.squeeze(), cmap='gray')  # True label
-    axs[1].set_title('True Label')
-
-    axs[2].imshow(predicted_label.squeeze(), cmap='gray')  # Predicted label
-    axs[2].set_title('Predicted Label')
-
-    # Display accuracy
-    axs[2].set_xlabel(f"Accuracy: {acc.mean():.4f}")
-
+    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
     
     pl.seed_everything(42)
-
-    #dm = ASOCADataModule(
-        #batch_size=config.batch_size,
-        #num_workers=config.num_workers,
-        #train_split_ratio=config.train_split_ratio,
-        #data_root=config.data_root)
     
     dm = DataModule(
         batch_size=config.batch_size,
@@ -270,10 +263,11 @@ if __name__ == "__main__":
         check_val_every_n_epoch=config.check_val_every_n_epoch,
         enable_progress_bar=config.enable_progress_bar,
         precision="bf16-mixed",
+        log_every_n_steps=5,
         # deterministic=True,
         logger=WandbLogger(project=config.wandb_project, name=config.wandb_experiment_name, config=config),
         callbacks=[
-            EarlyStopping(monitor="val/acc", patience=config.early_stopping_patience, mode="max", verbose=True),
+            EarlyStopping(monitor="val/dice", patience=config.early_stopping_patience, mode="max", verbose=True),
             LearningRateMonitor(logging_interval="step"),
             ModelCheckpoint(dirpath=Path(config.checkpoint_folder, config.wandb_project, config.wandb_experiment_name), 
                             filename='best_model', # :epoch={epoch:02d}-val_acc={val/acc:.4f}
@@ -288,31 +282,22 @@ if __name__ == "__main__":
     
     trainer.test(model, datamodule=dm)
 
-    # Visualize examples of segmentation
-    """ model.eval()
-    data_iter = iter(dm.normal_test_dataloader())
+    model.eval()
+    data_iter = iter(dm.test_dataloader())
     num_batches_to_skip = 8
     num_images_to_visualize = 5
-    acc_fn = DiceMetric(include_background=True, reduction="mean", num_classes=1, get_not_nans=False)
+    acc_fn = DiceMetric(include_background=False, reduction="mean", num_classes=config.num_classes, get_not_nans=False)
     for _ in range(0, num_images_to_visualize):
         for _ in range(0, num_batches_to_skip):
             next(data_iter)
         batch = next(data_iter)
         images = batch["image"]
         labels = batch["label"]
-        with torch.no_grad(): # Disable gradient calculation
-            y_hat = model(images)
-            acc = acc_fn(y_hat > 0.5, labels)
-        visualize_segmentation(images[0], labels[0], y_hat[0], acc, "Normal")
-
-    data_iter = iter(dm.diseased_test_dataloader())
-    for _ in range(0, num_images_to_visualize):
-        for _ in range(0, num_batches_to_skip):
-            next(data_iter)
-        batch = next(data_iter)
-        images = batch["image"]
-        labels = batch["label"]
-        with torch.no_grad(): # Disable gradient calculation
-            y_hat = model(images)
-            acc = acc_fn(y_hat > 0.5, labels)
-        visualize_segmentation(images[0], labels[0], y_hat[0], acc, "Diseased") """
+        # Generate predictions and visualize
+        with torch.no_grad():
+            y_hat = model(images)  # Logits
+            acc = acc_fn(y_hat.argmax(dim=1), labels)  # Compute Dice for predictions
+            for idx in range(images.shape[0]):
+                visualize_segmentation(
+                    images[idx], labels[idx], y_hat[idx], acc, f"Test Example {idx+1}"
+                )
